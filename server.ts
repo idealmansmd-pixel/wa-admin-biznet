@@ -32,7 +32,11 @@ async function startServer() {
   app.use(express.json());
 
   // --- AI Logic (Background) ---
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+  const aiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
+  if (!aiKey) {
+    console.error("CRITICAL: GOOGLE_GENAI_API_KEY is not defined in environment variables.");
+  }
+  const ai = new GoogleGenAI({ apiKey: aiKey || "" });
 
   async function getAIReply(messages: Message[]): Promise<any> {
     const { personality, prompts, rules, coveredAreas, product, packages, advantages, promos } = currentConfig;
@@ -50,8 +54,8 @@ async function startServer() {
     `;
 
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY is missing in environment");
+      if (!aiKey) {
+        throw new Error("AI Key is missing in environment");
       }
 
       const history = messages.slice(0, -1).map(m => ({
@@ -183,6 +187,7 @@ async function startServer() {
   connectToWhatsApp();
 
   // --- API Routes ---
+  app.get("/api/health", (req, res) => res.json({ status: "alive", timestamp: new Date().toISOString() }));
   app.post("/api/logout", async (req, res) => {
     try {
       if (sockInstance) {
@@ -233,4 +238,13 @@ async function startServer() {
   });
 }
 
-startServer();
+// Check if we are in a serverless environment
+if (process.env.VERCEL) {
+  // Export app for Vercel
+  // Note: Background WA connection will struggle in serverless
+  startServer();
+} else {
+  startServer();
+}
+
+export default startServer;
