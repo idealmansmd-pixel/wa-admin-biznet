@@ -10,7 +10,9 @@ import {
   Menu,
   X,
   Sparkles,
-  Activity
+  Activity,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ChatSimulator from './components/ChatSimulator';
@@ -20,21 +22,47 @@ import AIBuilder from './components/AIBuilder';
 import WhatsAppStatus from './components/WhatsAppStatus';
 import { Lead, BusinessInfo } from './types';
 import { DEFAULT_BUSINESS_INFO } from './constants';
+import { auth, loginWithGoogle } from './lib/firebase';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 
 type Tab = 'chat' | 'leads' | 'settings' | 'ai' | 'infra';
 
+const ADMIN_EMAIL = 'ideal.man.smd@gmail.com';
+
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [leads, setLeads] = useState<Lead[]>([]);
   const [businessInfo, setBusinessInfo] = useState<BusinessInfo>(DEFAULT_BUSINESS_INFO);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   useEffect(() => {
-    // Sync with backend on startup
-    fetch('/api/config')
-      .then(res => res.json())
-      .then(data => setBusinessInfo(data));
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (user && user.email === ADMIN_EMAIL) {
+      // Sync with backend on startup
+      fetch('/api/config')
+        .then(res => res.json())
+        .then(data => setBusinessInfo(data));
+    }
+  }, [user]);
+
+  const handleLogin = async () => {
+    try {
+      await loginWithGoogle();
+    } catch (error) {
+      console.error("Login Error:", error);
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
 
   const updateBusinessInfo = async (newInfo: BusinessInfo) => {
     setBusinessInfo(newInfo);
@@ -55,6 +83,50 @@ export default function App() {
     };
     setLeads(prev => [lead, ...prev]);
   };
+
+  if (loading) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-slate-50">
+        <motion.div 
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full"
+        />
+      </div>
+    );
+  }
+
+  if (!user || user.email !== ADMIN_EMAIL) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-[#F0F4F8] p-4 text-center">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-10 rounded-2xl shadow-2xl max-w-md w-full"
+        >
+          <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Wifi className="text-indigo-600 w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800 mb-2">WiFiPro Admin Panel</h1>
+          <p className="text-slate-500 mb-8">Silakan login dengan akun yang terdaftar untuk mengakses dashboard.</p>
+          
+          <button 
+            onClick={handleLogin}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg flex items-center justify-center gap-3 active:scale-95"
+          >
+            <LogIn size={20} />
+            Login with Google
+          </button>
+          
+          {user && user.email !== ADMIN_EMAIL && (
+            <p className="mt-6 text-red-500 text-sm font-medium">
+              Maaf, email <strong>{user.email}</strong> tidak memiliki akses ke panel ini.
+            </p>
+          )}
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-[#F0F4F8] text-slate-800 font-sans overflow-hidden">
@@ -113,11 +185,13 @@ export default function App() {
 
         <div className="p-6 bg-indigo-700/50 mt-auto">
           <div className="flex items-center gap-3 text-white opacity-90 overflow-hidden">
-            <div className="w-8 h-8 rounded-full bg-indigo-400 flex-shrink-0"></div>
+            <img src={user.photoURL || ""} alt="Avatar" className="w-8 h-8 rounded-full bg-indigo-400 flex-shrink-0 border border-white/20" />
             {isSidebarOpen && (
-              <div className="min-w-0">
-                <p className="text-xs font-bold truncate">Admin Sales</p>
-                <p className="text-[10px] truncate">Online • Ready to Close</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold truncate">{user.displayName || "Admin Sales"}</p>
+                <button onClick={handleLogout} className="text-[10px] text-white/70 hover:text-white flex items-center gap-1">
+                  <LogOut size={10} /> Logout
+                </button>
               </div>
             )}
           </div>

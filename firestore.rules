@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 
+             request.auth.token.email == 'ideal.man.smd@gmail.com' && 
+             request.auth.token.email_verified == true;
+    }
+
+    match /settings/businessConfig {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /whatsapp/session {
+      allow read, write: if isAdmin();
+    }
+  }
+}

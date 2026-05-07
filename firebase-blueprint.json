@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "Config": {
+      "title": "Business Configuration",
+      "description": "Stores the chatbot's personality, rules, and business details.",
+      "type": "object",
+      "properties": {
+        "personality": { "type": "object" },
+        "prompts": { "type": "array" },
+        "rules": { "type": "array" },
+        "coveredAreas": { "type": "array" },
+        "product": { "type": "object" },
+        "packages": { "type": "array" },
+        "advantages": { "type": "array" },
+        "promos": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Session": {
+       "title": "WhatsApp Session Data",
+       "description": "Stores authentication bits for WhatsApp.",
+       "type": "object",
+       "properties": {
+         "data": { "type": "string" },
+         "updatedAt": { "type": "string", "format": "date-time" }
+       }
+    }
+  },
+  "firestore": {
+    "settings/businessConfig": {
+      "schema": "Config",
+      "description": "Global configuration for the bot."
+    },
+    "whatsapp/session": {
+      "schema": "Session",
+      "description": "WhatsApp session state."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      // For this app, we trust the owner's email
+      return isSignedIn() && (
+        request.auth.token.email == 'ideal.man.smd@gmail.com' &&
+        request.auth.token.email_verified == true
+      );
+    }
+
+    function isValidConfig(data) {
+      return data.keys().hasAll(['personality', 'updatedAt']) &&
+             data.updatedAt is timestamp;
+    }
+
+    match /settings/businessConfig {
+      allow read: if true; // Publicly readable for the app to function
+      allow write: if isAdmin() && isValidConfig(request.resource.data);
+    }
+
+    match /whatsapp/session {
+      allow read, write: if isAdmin();
+    }
+  }
+}

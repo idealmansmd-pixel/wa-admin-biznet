@@ -17,19 +17,47 @@ import QRCode from "qrcode";
 import { DEFAULT_BUSINESS_INFO } from "./src/constants";
 import { BusinessInfo, Message } from "./src/types";
 
-// Business State (Simulating DB with simple JSON for now as per instructions)
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import firebaseConfig from "./firebase-applet-config.json";
+
+// Business State
 let currentConfig: BusinessInfo = DEFAULT_BUSINESS_INFO;
+
+// Initialize Firebase
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+async function syncConfig() {
+  try {
+    const docRef = doc(db, "settings", "businessConfig");
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      currentConfig = docSnap.data() as BusinessInfo;
+      console.log("Config loaded from Firestore");
+    } else {
+      // Save default config if not exists
+      await setDoc(docRef, { ...DEFAULT_BUSINESS_INFO, updatedAt: new Date().toISOString() });
+      console.log("Default config saved to Firestore");
+    }
+  } catch (e) {
+    console.error("Firestore sync error:", e);
+  }
+}
 let sessionStatus: 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'RECONNECTING' = 'DISCONNECTED';
 let lastQr: string | null = null;
 let sockInstance: any = null;
 
-async function startServer() {
-  const app = express();
-  const server = createServer(app);
-  const io = new Server(server);
-  const PORT = 3000;
+const app = express();
+const server = createServer(app);
+const io = new Server(server);
+const PORT = 3000;
 
-  app.use(express.json());
+app.use(express.json());
+
+async function startServer() {
+  // Load config
+  await syncConfig();
 
   // --- AI Logic (Background) ---
   const aiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GEMINI_API_KEY;
@@ -84,107 +112,122 @@ async function startServer() {
 
   // --- WhatsApp Gateway ---
   const sessionDir = path.join(process.cwd(), "sessions");
-  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir);
-
-  async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-    const { version } = await fetchLatestBaileysVersion();
-
-    sockInstance = makeWASocket({
-      version,
-      auth: state,
-      printQRInTerminal: false,
-      logger: pino({ level: 'silent' })
-    });
-
-    sockInstance.ev.on('connection.update', async (update: any) => {
-      const { connection, lastDisconnect, qr } = update;
-      
-      if (qr) {
-        lastQr = await QRCode.toDataURL(qr);
-        sessionStatus = 'DISCONNECTED';
-        io.emit('whatsapp.update', { status: sessionStatus, qr: lastQr });
-      }
-
-      if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut;
-        sessionStatus = 'DISCONNECTED';
-        lastQr = null;
-        io.emit('whatsapp.update', { status: sessionStatus, qr: null });
-        if (shouldReconnect) connectToWhatsApp();
-      } else if (connection === 'open') {
-        sessionStatus = 'CONNECTED';
-        lastQr = null;
-        io.emit('whatsapp.update', { status: sessionStatus, qr: null });
-        console.log('WhatsApp Connected!');
-      }
-    });
-
-    sockInstance.ev.on('creds.update', saveCreds);
-
-    sockInstance.ev.on('messages.upsert', async ({ messages, type }: any) => {
-      if (type === 'notify') {
-        for (const msg of messages) {
-          if (!msg.key.fromMe && msg.message) {
-            const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-            if (!text) continue;
-
-            const from = msg.key.remoteJid!;
-            console.log(`Message from ${from}: ${text}`);
-
-            // Simulate typing
-            await sockInstance.presenceSubscribe(from);
-            await delay(1000);
-            await sockInstance.sendPresenceUpdate('composing', from);
-            await delay(2000);
-
-            // Get AI Reply
-            const aiResponse = await getAIReply([{ id: '1', role: 'user', content: text, timestamp: Date.now() }]);
-            
-            await sockInstance.sendPresenceUpdate('paused', from);
-            
-            // --- Human Chat Bubble Response System ---
-            const fullReply = aiResponse.reply;
-            const personality = currentConfig.personality;
-
-            if (personality.splitMessages) {
-              // Split by sentences or newline
-              const bubbles = fullReply.split(/(?<=[.!?])\s+|\n+/).filter((s: string) => s.trim().length > 0);
-              
-              for (let i = 0; i < bubbles.length; i++) {
-                const bubble = bubbles[i].trim();
-                
-                // Calculate simulated typing delay based on message length and mode
-                let baseDelay = bubble.length * 50; // base 50ms per char
-                if (personality.typingDelayMode === 'fast') baseDelay *= 0.5;
-                if (personality.typingDelayMode === 'slow') baseDelay *= 1.5;
-                
-                // Add natural variance
-                const randomDelay = baseDelay + (Math.random() * 1000);
-                
-                await sockInstance.sendPresenceUpdate('composing', from);
-                await delay(randomDelay);
-                await sockInstance.sendPresenceUpdate('paused', from);
-                
-                await sockInstance.sendMessage(from, { text: bubble });
-                
-                // Extra pause between bubbles
-                if (personality.naturalPause && i < bubbles.length - 1) {
-                  await delay(1000 + Math.random() * 2000);
-                }
-              }
-            } else {
-              await sockInstance.sendMessage(from, { text: fullReply });
-            }
-            
-            io.emit('whatsapp.message', { from, text, reply: fullReply, analysis: aiResponse.analysis });
-          }
-        }
-      }
-    });
+  if (!fs.existsSync(sessionDir)) {
+    try {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    } catch (e) {
+      console.error("Could not create sessions dir:", e);
+    }
   }
 
-  connectToWhatsApp();
+  async function connectToWhatsApp() {
+    // Note: session storage on Vercel is temporary. 
+    // For production, use a Database for state storage.
+    try {
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const { version } = await fetchLatestBaileysVersion();
+
+      sockInstance = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' })
+      });
+
+      sockInstance.ev.on('connection.update', async (update: any) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+          lastQr = await QRCode.toDataURL(qr);
+          sessionStatus = 'DISCONNECTED';
+          io.emit('whatsapp.update', { status: sessionStatus, qr: lastQr });
+        }
+
+        if (connection === 'close') {
+          const shouldReconnect = (lastDisconnect?.error as any)?.output?.statusCode !== DisconnectReason.loggedOut;
+          sessionStatus = 'DISCONNECTED';
+          lastQr = null;
+          io.emit('whatsapp.update', { status: sessionStatus, qr: null });
+          if (shouldReconnect && !process.env.VERCEL) connectToWhatsApp();
+        } else if (connection === 'open') {
+          sessionStatus = 'CONNECTED';
+          lastQr = null;
+          io.emit('whatsapp.update', { status: sessionStatus, qr: null });
+          console.log('WhatsApp Connected!');
+        }
+      });
+
+      sockInstance.ev.on('creds.update', saveCreds);
+
+      sockInstance.ev.on('messages.upsert', async ({ messages, type }: any) => {
+        if (type === 'notify') {
+          for (const msg of messages) {
+            if (!msg.key.fromMe && msg.message) {
+              const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+              if (!text) continue;
+
+              const from = msg.key.remoteJid!;
+              console.log(`Message from ${from}: ${text}`);
+
+              // Simulate typing
+              await sockInstance.presenceSubscribe(from);
+              await delay(1000);
+              await sockInstance.sendPresenceUpdate('composing', from);
+              await delay(2000);
+
+              // Get AI Reply
+              const aiResponse = await getAIReply([{ id: '1', role: 'user', content: text, timestamp: Date.now() }]);
+              
+              await sockInstance.sendPresenceUpdate('paused', from);
+              
+              // --- Human Chat Bubble Response System ---
+              const fullReply = aiResponse.reply;
+              const personality = currentConfig.personality;
+
+              if (personality.splitMessages) {
+                // Split by sentences or newline
+                const bubbles = fullReply.split(/(?<=[.!?])\s+|\n+/).filter((s: string) => s.trim().length > 0);
+                
+                for (let i = 0; i < bubbles.length; i++) {
+                  const bubble = bubbles[i].trim();
+                  
+                  // Calculate simulated typing delay based on message length and mode
+                  let baseDelay = bubble.length * 50; // base 50ms per char
+                  if (personality.typingDelayMode === 'fast') baseDelay *= 0.5;
+                  if (personality.typingDelayMode === 'slow') baseDelay *= 1.5;
+                  
+                  // Add natural variance
+                  const randomDelay = baseDelay + (Math.random() * 1000);
+                  
+                  await sockInstance.sendPresenceUpdate('composing', from);
+                  await delay(randomDelay);
+                  await sockInstance.sendPresenceUpdate('paused', from);
+                  
+                  await sockInstance.sendMessage(from, { text: bubble });
+                  
+                  // Extra pause between bubbles
+                  if (personality.naturalPause && i < bubbles.length - 1) {
+                    await delay(1000 + Math.random() * 2000);
+                  }
+                }
+              } else {
+                await sockInstance.sendMessage(from, { text: fullReply });
+              }
+              
+              io.emit('whatsapp.message', { from, text, reply: fullReply, analysis: aiResponse.analysis });
+            }
+          }
+        }
+      });
+    } catch (e) {
+      console.error("WA Connection Error:", e);
+    }
+  }
+
+  // Only auto-connect if NOT in serverless Vercel (or handle differently)
+  if (!process.env.VERCEL) {
+    connectToWhatsApp();
+  }
 
   // --- API Routes ---
   app.get("/api/health", (req, res) => res.json({ status: "alive", timestamp: new Date().toISOString() }));
@@ -214,9 +257,16 @@ async function startServer() {
   });
 
   app.get("/api/config", (req, res) => res.json(currentConfig));
-  app.post("/api/config", (req, res) => {
+  app.post("/api/config", async (req, res) => {
     currentConfig = req.body;
-    res.json({ success: true });
+    try {
+      const docRef = doc(db, "settings", "businessConfig");
+      await setDoc(docRef, { ...currentConfig, updatedAt: new Date().toISOString() });
+      res.json({ success: true });
+    } catch (e) {
+      console.error("Failed to save config to Firestore:", e);
+      res.status(500).json({ error: "Failed to save config" });
+    }
   });
   app.get("/api/status", (req, res) => res.json({ status: sessionStatus, qr: lastQr }));
 
@@ -230,21 +280,19 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
+    app.get("*", (req, res) => {
+      if (req.path.startsWith('/api')) return;
+      res.sendFile(path.join(distPath, "index.html"));
+    });
   }
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
-// Check if we are in a serverless environment
-if (process.env.VERCEL) {
-  // Export app for Vercel
-  // Note: Background WA connection will struggle in serverless
-  startServer();
-} else {
-  startServer();
-}
+startServer();
 
-export default startServer;
+export default app;
